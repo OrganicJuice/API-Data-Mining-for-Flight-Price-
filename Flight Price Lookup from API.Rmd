@@ -1,0 +1,134 @@
+---
+title: "final"
+author: "HD"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I did this project because every time I need to go somewhere, I always find myself ckecking at the flight tickets price non stop for couple days just to get the right price. I want to buy the cheapest ticket in for my trip. I want to automate this process and get the price of the ticket for the day I want to depart and compare it to the average price of the last 60 days. Because there was a time that I waited too long and the price of the tickets went up. 
+
+To make my work reusable, I wrote a function that can change the api link baased on the trip info of my choice. Modify the api link and get different outcome of the data. Most of the testing I did for this are domestic flights, but I also tried an international flight as you can see in the code I did New York City to Geneva. The complexity of this for testing my word is perfect because NYC have 3 different airport add on top of the complexity of different ways of travel to Geneva, direct flight or layovers. 
+
+60 day average info scrape and then compare the price of the depart date to the average price. I made the trip info as variables so they can be changed.  
+```{r}
+library(httr2)
+library(jsonlite)
+
+# Enter trip info. 
+from <- "LAX" #Airport code
+to <- "LAS"
+depart_date <- "2024-08-17" # Format: "YYYY-MM-DD"
+return_date <- NA  # Put in NA for one-way
+
+
+# Adjusted function to handle NA as no return date
+make_skiplagged_request <- function(from, to, depart_date, return_date = NA, adults = 1, children = 0) {
+
+  Skiplagged_api_url <- "https://skiplagged.com/api/flex.php"
+  
+  # Determine if a return date is effectively provided (not NA)
+  has_return_date <- !is.na(return_date) && return_date != ""
+  
+  # Construct the API and referer URLs based on the info 
+  if (has_return_date) {
+    api_url <- sprintf("%s?from=%s&to=%s&depart=%s&return=%s&counts[adults]=%d&counts[children]=%d",
+                       Skiplagged_api_url, from, to, depart_date, return_date, adults, children)
+    referer_url <- sprintf("https://skiplagged.com/flights/%s/%s/%s/%s", from, to, depart_date, return_date)
+  } else {
+    api_url <- sprintf("%s?from=%s&to=%s&depart=%s&return=&counts[adults]=%d&counts[children]=%d",
+                       Skiplagged_api_url, from, to, depart_date, adults, children)
+    referer_url <- sprintf("https://skiplagged.com/flights/%s/%s/%s", from, to, depart_date)
+  }
+  
+  
+  
+  skip_request <- request(api_url) %>% 
+    req_headers(
+      "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", 
+      "Referer" = referer_url) %>% 
+    req_perform(verbosity = 2)
+  
+  # Extract and parse the response
+  req_data <- resp_body_string(skip_request) %>% 
+    fromJSON()
+  
+  return(req_data)
+}
+
+
+# Call the function.
+response_data <- make_skiplagged_request(from, to, depart_date, return_date)
+
+sixty_price_data <- as.data.frame(response_data$depart)
+
+#delete sixty_price_data V3, V4 and remane V1 to date and V2 to price in base r 
+sixty_price_data <- sixty_price_data[,c(1,2)]
+colnames(sixty_price_data) <- c("date", "price")
+
+sixty_price_data$price <- as.numeric(sixty_price_data$price) / 100
+sixty_price_data$price <- sprintf("%.2f", sixty_price_data$price)
+
+sixty_price_data$date <- as.Date(sixty_price_data$date)
+sixty_price_data$day_of_week <- weekdays(sixty_price_data$date)
+
+```
+Here are some of the meteics I want to get from the data. The the entered date is the benchmark for everything so that get listed first and then options for cheapet flight in the frame of 60 days with cheapest ticket price with in the same travel week. Based on the analysis, recommendations were provided regarding whether to purchase a ticket for the specific departure date. The decision was informed by comparing the departure date's price to the overall average price and considering the context of weekly pricing trends.
+
+"BUY" Recommendation: Issued if the departure date's price was below the overall average, indicating a favorable purchasing opportunity.
+"Consider" Recommendation: Suggested if the departure date's price was at or above the overall average, advising further consideration or potential waiting for a better price.
+
+Find the lowest price and the date correspondent to it and also calculate the average price of the 60 days. 
+
+Another thing to consider is the day of traveling, for example, weekend tickets tends to be more expensive compare to the ones on a weekday. 
+```{r}
+sixty_price_data$price <- as.numeric(sixty_price_data$price)
+
+lowest_price <- min(sixty_price_data$price)
+
+lowest_price_date <- sixty_price_data$date[sixty_price_data$price == lowest_price]
+
+lowest_price_day_of_week <- sixty_price_data$day_of_week[sixty_price_data$price == lowest_price]
+# Calculate the overall average price
+overall_average_price <- mean(sixty_price_data$price)
+
+#compare average price to the depart date price 
+depart_date_price <- sixty_price_data$price[sixty_price_data$date == depart_date]
+
+depart_date <- as.Date(depart_date)
+
+# Find the weekday of the departure date
+depart_weekday <- weekdays(depart_date)
+
+same_weekday_data <- sixty_price_data[sixty_price_data$day_of_week == depart_weekday,]
+
+# Find the lowest and highest prices for the same weekday
+lowest_price_same_weekday <- min(same_weekday_data$price)
+highest_price_same_weekday <- max(same_weekday_data$price)
+
+results <- list(
+  depart_date = depart_date,
+  depart_weekday = depart_weekday,
+  depart_date_price = depart_date_price,
+  lowest_price = lowest_price,
+  lowest_price_date = lowest_price_date,
+  lowest_price_day_of_week = lowest_price_day_of_week,
+  highest_price_same_weekday = highest_price_same_weekday,
+  lowest_price_same_weekday = lowest_price_same_weekday,
+  overall_average_price = overall_average_price
+)
+
+print(results)
+
+if (depart_date_price < overall_average_price) {
+    message("BUY")
+  } else {
+    message("Consider")
+  }
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
