@@ -1,0 +1,182 @@
+---
+title: "test shiny"
+output: html_document
+date: "2024-09-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(shiny)
+library(httr)
+library(jsonlite)
+
+# Function to handle the Skiplagged API request using `httr` with timeout and error handling
+make_skiplagged_request <- function(from, to, depart_date, return_date = NA, adults = 1, children = 0) {
+  
+  Skiplagged_api_url <- "https://skiplagged.com/api/flex.php"
+  
+  # Determine if a return date is effectively provided (not NA)
+  has_return_date <- !is.na(return_date) && return_date != ""
+  
+  # Construct the API and referer URLs based on the info 
+  if (has_return_date) {
+    api_url <- sprintf("%s?from=%s&to=%s&depart=%s&return=%s&counts[adults]=%d&counts[children]=%d",
+                       Skiplagged_api_url, from, to, depart_date, return_date, adults, children)
+    referer_url <- sprintf("https://skiplagged.com/flights/%s/%s/%s/%s", from, to, depart_date, return_date)
+  } else {
+    api_url <- sprintf("%s?from=%s&to=%s&depart=%s&return=&counts[adults]=%d&counts[children]=%d",
+                       Skiplagged_api_url, from, to, depart_date, adults, children)
+    referer_url <- sprintf("https://skiplagged.com/flights/%s/%s/%s", from, to, depart_date)
+  }
+  
+  print(paste("Requesting URL:", api_url))  # Print for debugging
+  
+  # Perform API request with a timeout of 10 seconds
+  skip_request <- tryCatch({
+    httr::GET(api_url,
+              httr::add_headers(
+                "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", 
+                "Referer" = referer_url),
+              httr::timeout(10))  # 10-second timeout for the request
+  }, error = function(e) {
+    message("Error: ", e$message)  # Log the error message
+    return(NULL)  # Return NULL if there is an error
+  })
+  
+  # Check if the request succeeded
+  if (is.null(skip_request) || httr::http_status(skip_request)$category != "Success") {
+    return(NULL)
+  }
+  
+  # Parse the JSON response
+  req_data <- httr::content(skip_request, as = "text", encoding = "UTF-8")
+  
+  # Convert to JSON
+  parsed_data <- fromJSON(req_data)
+  
+  return(parsed_data)
+}
+
+# Define the UI for the Shiny app
+ui <- fluidPage(
+  titlePanel("Flight Price Analysis"),
+  sidebarLayout(
+    sidebarPanel(
+      textInput("from", "From", value = "LAX"),
+      textInput("to", "To", value = "LAS"),
+      dateInput("depart_date", "Depart Date", value = "2024-09-26"),
+      dateInput("return_date", "Return Date", value = ""),
+      actionButton("submit", "Submit")
+    ),
+    mainPanel(
+      textOutput("results"),
+      verbatimTextOutput("raw_api_response")  # For debugging raw API response
+    )
+  )
+)
+
+# Define the server logic for the Shiny app
+server <- function(input, output) {
+  
+  observeEvent(input$submit, {
+    
+    # Ensure date is properly formatted
+    depart_date <- tryCatch(as.Date(input$depart_date), error = function(e) NULL)
+    return_date <- tryCatch(as.Date(input$return_date), error = function(e) NA)
+    
+    # Check if the date parsing was successful
+    if (is.null(depart_date)) {
+      output$results <- renderText("Error: Invalid departure date.")
+      return()
+    }
+    
+    from <- input$from
+    to <- input$to
+    
+    # Call the API function
+    response_data <- make_skiplagged_request(from, to, depart_date, return_date)
+    
+    # If no response from API, show error message
+    if (is.null(response_data)) {
+      output$results <- renderText({
+        "Error: Could not retrieve flight data. Please check your inputs or try again later."
+      })
+      output$raw_api_response <- renderPrint({
+        "No response from the API."
+      })
+      return()  # Exit early if API fails
+    }
+    
+    # Show raw API response
+    output$raw_api_response <- renderPrint({
+      response_data
+    })
+    
+    # Convert response to data frame
+    if (!is.null(response_data$depart)) {
+      sixty_price_data <- as.data.frame(response_data$depart)
+      
+      # Clean and process the data
+      sixty_price_data <- sixty_price_data[, c(1, 2)]
+      colnames(sixty_price_data) <- c("date", "price")
+      sixty_price_data$price <- as.numeric(sixty_price_data$price) / 100
+      sixty_price_data$price <- sprintf("%.2f", sixty_price_data$price)
+      sixty_price_data$date <- as.Date(sixty_price_data$date)
+      sixty_price_data$day_of_week <- weekdays(sixty_price_data$date)
+      sixty_price_data$price <- as.numeric(sixty_price_data$price)
+      
+      lowest_price <- min(sixty_price_data$price)
+      lowest_price_date <- sixty_price_data$date[sixty_price_data$price == lowest_price]
+      lowest_price_day_of_week <- sixty_price_data$day_of_week[sixty_price_data$price == lowest_price]
+      
+      # Calculate the overall average price
+      overall_average_price <- mean(sixty_price_data$price)
+      
+      # Compare average price to the depart date price 
+      depart_date_price <- sixty_price_data$price[sixty_price_data$date == depart_date]
+      
+      if (length(depart_date_price) == 0) {
+        depart_date_price <- "N/A"  # If no matching price for the departure date
+      } else {
+        depart_date_price <- sprintf("%.2f", depart_date_price)
+      }
+      
+      # Prepare results for output
+      result_text <- paste(
+        "Departure Date:", depart_date, "\n",
+        "Day of the Week:", weekdays(as.Date(depart_date)), "\n",
+        "Price on Departure Date: $", depart_date_price, "\n",
+        "Lowest Price: $", lowest_price, "\n",
+        "Lowest Price Date:", lowest_price_date, "\n",
+        "Lowest Price Day of the Week:", lowest_price_day_of_week, "\n",
+        "Overall Average Price: $", overall_average_price, "\n",
+        if (depart_date_price != "N/A" && as.numeric(depart_date_price) < overall_average_price) "BUY" else "CONSIDER"
+      )
+      
+      output$results <- renderText({
+        result_text
+      })
+    } else {
+      output$results <- renderText({
+        "No departure price data found."
+      })
+    }
+  })
+}
+
+# Run the Shiny app
+shinyApp(ui = ui, server = server)
+
+
+```
+
+
